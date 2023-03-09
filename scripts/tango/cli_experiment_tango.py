@@ -740,6 +740,8 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         server_reader_process = Thread(target=self.server_reader)
         server_reader_process.daemon = True
         server_reader_process.start()
+        
+        print("WARNING: This script needs to be updated with the new content of the scrip that does not use tango: /tlag_manager/scripts/cli_experiment.py")
 
 
         while 1:
