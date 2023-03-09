@@ -225,18 +225,16 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-        while 1:
-            if time.time() > initial_time + duration_gap:
-                relay_status = self.usbRelay.get_status()
-                print("Jump at:", time.time())
-                if not relay_status[channel_turbo-1]:
-                    self.usbRelay.single_open(channel_rotary)
-                else:
-                    raise Exception("Attempted to open rotary but turbo was still open")
-                break
+        time.sleep(duration_gap)
 
-            else:
-                time.sleep(0.005)
+        relay_status = self.usbRelay.get_status()
+        print("Jump at:", time.time())
+        if not relay_status[channel_turbo-1]:
+            self.usbRelay.single_open(channel_rotary)
+        else:
+            raise Exception("Attempted to open rotary but turbo was still open")
+        break
+
 
         self.update_status_relay()
         
@@ -254,23 +252,20 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-        while 1:
-            if time.time() > initial_time + duration_gap:
-                relay_status = self.usbRelay.get_status()
-                print("Jump at:", time.time())
-                if not relay_status[channel_turbo-1]:
-                    
-                    self.control_move(percentage)
-                    #############
-                    #   Delay   #
-                    #############
-                    time.sleep(delay_move)
-                else:
-                    raise Exception("Attempted to open rotary but turbo was still open")
-                break
-
-            else:
-                time.sleep(0.005)
+        time.sleep(duration_gap)
+        
+        relay_status = self.usbRelay.get_status()
+        print("Jump at:", time.time())
+        if not relay_status[channel_turbo-1]:
+            
+            self.control_move(percentage)
+            #############
+            #   Delay   #
+            #############
+            time.sleep(delay_move)
+        else:
+            raise Exception("Attempted to open rotary but turbo was still open")
+        break
 
         self.update_status_relay()
         

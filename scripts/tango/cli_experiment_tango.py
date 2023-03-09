@@ -227,17 +227,14 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-        while 1:
-            if time.time() > initial_time + delay:
-                print("Jump at:", time.time())
-                if not self.eth002Relay.read_attribute(channel_turbo).value:
-                    self.eth002Relay.write_attribute(channel_rotary, True)
-                else:
-                    raise Exception("Attempted to open rotary but turbo was still open")
-                break
+        time.sleep(delay)
 
-            else:
-                time.sleep(0.005)
+        print("Jump at:", time.time())
+        if not self.eth002Relay.read_attribute(channel_turbo).value:
+            self.eth002Relay.write_attribute(channel_rotary, True)
+        else:
+            raise Exception("Attempted to open rotary but turbo was still open")
+        break
 
         self.update_status_relay()
 
@@ -253,22 +250,19 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-        while 1:
-            if time.time() > initial_time + delay:
-                print("Jump at:", time.time())
-                if not self.eth002Relay.read_attribute(channel_rotary).value:
-                    
-                    self.control_move(percentage)
-                    ################################
-                    ### Sleep after control move ###
-                    ################################
-                    time.sleep(2.3) # HARDCODE, change to 2.3
-                else:
-                    raise Exception("Attempted to open rotary but turbo was still open")
-                break
-
-            else:
-                time.sleep(0.005)
+        time.sleep(delay)
+        
+        print("Jump at:", time.time())
+        if not self.eth002Relay.read_attribute(channel_rotary).value:
+            
+            self.control_move(percentage)
+            ################################
+            ### Sleep after control move ###
+            ################################
+            time.sleep(2.3) # HARDCODE, change to 2.3
+        else:
+            raise Exception("Attempted to open rotary but turbo was still open")
+        break
 
         self.update_status_relay()
         
