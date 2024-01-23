@@ -11,14 +11,13 @@ from simple_pid import PID
 
 class DHS1100_controller:
 
-    def change_power(self, target_power, duration = 10):
+    def change_power(self, target_power, duration=10, gap=0.4):
         """
         Changes the power from {self.current power} to {target_power} in {duration} seconds
         Power is changed linearly every {gap} seconds.
         """
 
         # Seconds between each change
-        gap = 0.4
         sleep_time = 0.01
 
         steps = int(duration / gap) + 1

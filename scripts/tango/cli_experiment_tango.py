@@ -12,9 +12,11 @@ import numpy as np
 import pickle
 import math
 import logging
+import pandas as pd
+import pprint
 
-from furnace_controller import DHS1100_controller
-from logger_instruments import Instruments_logger
+from furnace_controller_tango import DHS1100_controller
+from logger_instruments_tango import Instruments_logger
 
 import sys
 import colorama
@@ -37,7 +39,7 @@ KEITHLEY_PARAMETERS = {
 class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
 
-    def start_reading(self, filepath_pressure, filepath_temperature): # filepath_pressure42
+    def start_reading(self, filepath_pressure, filepath_temperature, filepath_pressure42 = None):
 
         # Run the reader and writer processes in the background...
         self.dhs1100_reader_process = Thread(target=self.read_furnace_data)
@@ -63,9 +65,7 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         # self.graphix242_writer_process.start()
 
     def update_status_relay(self):
-        # TODO: Add command relay_states in ETH002 DS
-        # self.relay_status = self.eth002Relay.relay_states
-        self.relay_status = [0, 0]
+        self.relay_status = self.eth002Relay.get_states()
 
         for i, status in enumerate(self.relay_status):
             state = "open" if status else "closed"
@@ -215,7 +215,8 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-    def pressure_jump(self, delay = 2):
+
+    def pressure_jump(self, duration_gap=2):
         # Closes the low pressure circuit. Waits {delay} seconds. Opens the high pressure circuit.
 
         initial_time = time.time()
@@ -227,18 +228,17 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-        time.sleep(delay)
+        time.sleep(duration_gap)
 
         print("Jump at:", time.time())
         if not self.eth002Relay.read_attribute(channel_turbo).value:
             self.eth002Relay.write_attribute(channel_rotary, True)
         else:
             raise Exception("Attempted to open rotary but turbo was still open")
-        break
 
         self.update_status_relay()
 
-    def pressure_jump_move(self, percentage, delay = 2):
+    def pressure_jump_move(self, percentage, duration_gap=2 , delay_move=2.3):
         # Closes the low pressure circuit. Waits {delay} seconds. Opens the high pressure circuit.
 
         initial_time = time.time()
@@ -250,19 +250,20 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         self.update_status_relay()
 
-        time.sleep(delay)
+        time.sleep(duration_gap)
         
+        relay_status = self.usbRelay.get_status()
         print("Jump at:", time.time())
-        if not self.eth002Relay.read_attribute(channel_rotary).value:
+        if not self.eth002Relay.read_attribute(channel_rotary).value and \
+           not self.eth002Relay.read_attribute(channel_turbo).value:
             
             self.control_move(percentage)
-            ################################
-            ### Sleep after control move ###
-            ################################
-            time.sleep(2.3) # HARDCODE, change to 2.3
+            #############
+            #   Delay   #
+            #############
+            time.sleep(delay_move)
         else:
             raise Exception("Attempted to open rotary but turbo was still open")
-        break
 
         self.update_status_relay()
         
@@ -281,6 +282,56 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         return power
 
+    def load_jump_parameters(self, target_temperature, target_pressure, move, flow):
+        path_jump_parameters_file = "/homelocal/opbl11/Documents/TLAG/tlag_manager/jump_calibrations.csv"
+
+        df_jumps_calibrations = pd.read_csv(path_jump_parameters_file)
+
+        interesting_row = df_jumps_calibrations[
+            (df_jumps_calibrations["Temperature"] == target_temperature) &
+            (df_jumps_calibrations["TP"] == target_pressure) &
+            (df_jumps_calibrations["Move"] == move) &
+            (df_jumps_calibrations["Flow"] == flow)
+        ]
+
+        if len(interesting_row) < 1:
+            raise Exception("There is no calibration that matches this parameters")
+        elif len(interesting_row) > 1:
+            raise Exception("Two different callibrations found with this parameters, please check your calibrations table")
+
+        self.jump_params_dict = {
+            "TPS": interesting_row["TPS"].values[0],
+            "TPPO": interesting_row["TPPO"].values[0],
+            "Dramp": interesting_row["Dramp"].values[0],
+            "Dplateau": interesting_row["Dplateau"].values[0],
+            "Delbow": interesting_row["Delbow"].values[0],
+            "IntegralTerm": interesting_row["IntegralTerm"].values[0],
+            "Delay": interesting_row["Delay"].values[0],
+            "Anticipation": interesting_row["Anticipation"].values[0]
+        }
+
+        self.loaded_jump_conditions = {
+            "Temperature": target_temperature,
+            "Pressure": target_pressure,
+            "Move": move,
+            "Flow": flow
+        }
+
+    def log_current_jump_configuration(self):
+        # Save parameters somewhere
+        self.logger.info("TPS variable {} mA".format(self.jump_params_dict["TPS"]))
+        self.logger.info("TPPO variable variable {} mA".format(self.jump_params_dict["TPPO"]))
+        self.logger.info("Dramp variable {} seconds".format(self.jump_params_dict["Dramp"]))
+        self.logger.info("Dplateau variable variable {} seconds".format(self.jump_params_dict["Dplateau"]))
+        self.logger.info("Delbow variable {} seconds".format(self.jump_params_dict["Delbow"]))
+        self.logger.info("IntegralTerm variable variable {} units".format(self.jump_params_dict["IntegralTerm"]))
+        self.logger.info("Delay variable {} seconds".format(self.jump_params_dict["Delay"]))
+        self.logger.info("Anticipation variable variable {} seconds".format(self.jump_params_dict["Anticipation"]))
+
+    def print_current_jump_configuration(self):
+        pprint.pprint(self.loaded_jump_conditions)
+        pprint.pprint(self.jump_params_dict)
+
     def change_power_jump(self, target_pressure, percentage):
 
         self.lock_communication_furnace.acquire()
@@ -293,11 +344,32 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
         print("Interpolated power: ", target_power_stabilization)
 
+        # Load jump parameters
+        target_power_stabilization = self.jump_params_dict["TPS"]
+        target_power_peak_overheatting = self.jump_params_dict["TPPO"]
 
+        power_elbow = target_power_peak_overheatting - (target_power_peak_overheatting - target_power_stabilization)*0.55
+
+        duration_peak_ramp = self.jump_params_dict["Dramp"]
+        duration_plateau = self.jump_params_dict["Dplateau"]
+        duration_elbow = self.jump_params_dict["Delbow"]
+
+        integral_term = self.jump_params_dict["IntegralTerm"]
+        delay_move = self.jump_params_dict["Delay"]
+        anticipation_ev = self.jump_params_dict["Anticipation"]
+
+        # Time between closing turbo circuit and opening rotary circuit
+        duration_gap = 2
+
+        # Log current values
+        self.log_current_jump_configuration()
+        self.print_current_jump_configuration()
+        
+        """
         ###########
         #   TPS   #
         ###########
-        target_power_stabilization = 7750
+        target_power_stabilization = 7300
         # 7935 # Stabilization at 880 degrees and 35 mbar (69%) (only tested, not sure if it is optimal).
         # 7820 # Stabilization at 870 degrees and 35 mbar (68%) (only tested, not sure if it is optimal).
         # 7590 # Stabilization at 850 (and 860) degrees and 35 mbar (66%). Outdated
@@ -312,7 +384,7 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         ############
         #   TPPO   #
         ############
-        target_power_peak_overheatting = 9750
+        target_power_peak_overheatting = 9380
         # 9718 # Peak at 880 degrees and 35mbar (only tested, not sure if it is optimal).
         # 9660 # Peak at 870? degrees and jump from 0.005 to 35 mbar 84%
         # 9545 # Peak at 850? degrees and jump from 0.005 to 35 mbar 83%
@@ -327,19 +399,29 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         
         # power_elbow = self.current_power + (target_power_stabilization - self.current_power)*1.6
         power_elbow = target_power_peak_overheatting - (target_power_peak_overheatting - target_power_stabilization)*0.55
-        
+        """
 
         print("Target power overheating:", target_power_peak_overheatting)
         print("Target power stabilization:", target_power_stabilization)
 
-        if current_temperature < 790 or target_pressure < 0.1 or target_power_peak_overheatting > 10000:
-            print("Current temperature < 810 or target pressure < 0.1 or target_power > 10000!!")
+        if current_temperature < 790 or target_pressure < 0.1 or target_power_peak_overheatting > 11000 or target_power_stabilization > 9500:
+            print("Current temperature < 790 or target pressure < 0.1 or target_power > 11000 or target_power_stabilization > 9500!!")
             return 0
         
         # Do jump
         self.jumping = True
-        # self.pressure_jump()
-        self.pressure_jump_move(percentage=percentage)
+        if percentage == 0:
+            jump_electrovalve = Thread(target=self.pressure_jump, args=(duration_gap,))
+            jump_electrovalve.daemon = True
+            jump_electrovalve.start()
+            ################
+            # Anticipation #
+            ################
+            # Seconds elapsed between change of power and jump
+            time.sleep(duration_gap - anticipation_ev)
+            # self.pressure_jump()
+        else:
+            self.pressure_jump_move(percentage=percentage, duration_gap=duration_gap, delay_move=delay_move)
 
         # time.sleep(0.1)
 
@@ -347,32 +429,30 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         ###############
         # D peak ramp #
         ###############
-        self.change_power(target_power_peak_overheatting, duration = 1.6) # Time for 500ml and 100% -> 1.6 # Time for 250ml and 100% -> 28
+        self.change_power(target_power_peak_overheatting, duration = duration_peak_ramp) # Time for 500ml and 100% -> 1.6 # Time for 250ml and 100% -> 28
         
         
         #############
         # D plateau #
         #############
-        time.sleep(3)
+        time.sleep(duration_plateau)
 
         print("changing power elbow....")
         
         ###########
         # D elbow #
         ###########
-        self.change_power(power_elbow, duration = 8)
+        self.change_power(power_elbow, duration = duration_elbow)
         
         self.lock_communication_furnace.acquire()
-        setpoint_pid = str(self.dhs1100.read_attribute("setpoint").value)
+        setpoint_pid = self.dhs1100.read_attribute("setpoint").value
         self.lock_communication_furnace.release()
         
         
         #################
         # Integral term #
         #################
-        integral_term=-60
-        self.command_start_pid(setpoint=setpoint_pid, integral_term=integral_term)
-        self.logger.info("Integral term {}".format(integral_term))
+        self.command_start_pid(setpoint=setpoint_pid, integral_term=integral_term) 
         
         self.jumping = False
         # print("changing power stabilization....")
@@ -403,7 +483,8 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
 
     def command_temp_control(self):
         current_temp_control = self.dhs1100.read_attribute("temp_control").value
-        print("Current temp_control is {}".format(current_temp_control))
+        temp_control_str = "Manual" if current_temp_control else "Automatic"
+        print("Current temp_control is {}".format(temp_control_str))
         new_temp_control = input("Change temp_control to (0 - Automatic, 1 - Manual): ")
         new_temp_control = int(new_temp_control)
         
@@ -441,7 +522,7 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
             print("") # Print a new line
                 
             self.lock_communication_furnace.acquire()
-            setpoint_pid = str(self.dhs1100.read_attribute("setpoint").value)
+            setpoint_pid = self.dhs1100.read_attribute("setpoint").value
             self.lock_communication_furnace.release()
             self.command_start_pid(setpoint=setpoint_pid)
 
@@ -462,15 +543,15 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
     def command_start_pid(self, setpoint=None, integral_term = None):
         
         if setpoint is None:
-            setpoint = input("Introduce setpoint: ")
-        if setpoint.isnumeric():
-            if not self.new_pid.is_set():
-                self.new_pid.set()
-                time.sleep(1.5)
-            self.new_pid.clear()
-            pid_process = Thread(target=self.start_pid, args=(int(setpoint), integral_term))
-            pid_process.daemon = True
-            pid_process.start()
+            setpoint = int(input("Introduce setpoint: "))
+        
+        if not self.new_pid.is_set():
+            self.new_pid.set()
+            time.sleep(1.5)
+        self.new_pid.clear()
+        pid_process = Thread(target=self.start_pid, args=(setpoint, integral_term))
+        pid_process.daemon = True
+        pid_process.start()
 
     def command_stop_pid(self):
         self.new_pid.set()
@@ -513,7 +594,7 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         jump_mbar = 35
         self.logger.info("Ready to change pressure to {} mbar".format(jump_mbar))
         
-        move_percentage = input("Introduce the target percentage of the MOVE (in %): ")
+        move_percentage = input("Introduce the target percentage of the MOVE (in %), 0 for electrovalve jump: ")
         self.logger.info("Ready to open MOVE to {} %".format(move_percentage))
         
         # Stop_pid
@@ -534,8 +615,9 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         self.change_setpoint(setpoint=25, delta=25)
         
         if current_temp_control == 1:
-            self.change_power(target_power=0, duration=100)
+            self.change_power(target_power=0, duration=40, gap=0.8)
 
+    
     def command_start_reading(self):
         with open(self.communication_file, 'a') as f:
             f.write("start_acquisition" + "\n")
@@ -543,6 +625,29 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
     def command_stop_reading(self):
         with open(self.communication_file, 'a') as f:
             f.write("stop_acquisition" + "\n")
+
+    def command_load_jump_calibration(self):
+        # try:
+        target_temperature = int(input("Introduce target temperature: "))
+        target_pressure = int(input("Introduce target pressure (35 or 100): "))
+        move = int(input("Introduce move percentage (0 for electrovalve jump): "))
+        flow = int(input("Introduce target flow (should be 500): "))
+
+        self.load_jump_parameters(
+            target_temperature=target_temperature,
+            target_pressure=target_pressure,
+            move=move,
+            flow=flow    
+        )
+
+        # except Exception as e:
+        #    print(e)
+
+    def command_get_jump_calbration(self):
+        try:
+            self.print_current_jump_configuration()
+        except Exception as e:
+            print(e)
 
     def read_last_line(self):
         with open(self.communication_file, 'r') as f:
@@ -704,7 +809,6 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         # self.communication_file = "/homelocal/opbl11/Documents/TLAG/TLAG-tool_SAFA/experiment_manager/sardana_communication.txt"
 
         cwd = os.path.dirname(__file__)
-        print(len(os.path.dirname(__file__)))
         self.path_results = "/homelocal/opbl11/Documents/TLAG/tlag_manager/results/"
 
         self.path_pressure = os.path.join(self.path_results, "pressure")
@@ -744,94 +848,108 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         print("WARNING: This script needs to be updated with the new content of the scrip that does not use tango: /tlag_manager/scripts/cli_experiment.py")
 
 
-        while 1:
-            with colorama_text():
-                command = input(Style.DIM + "Introduce new command \n>>" + Style.RESET_ALL + Fore.CYAN)
-            self.logger.info("Command introduced: {}".format(command))
-            
-            print(Style.RESET_ALL, end = "")
-            sys.stdout.flush()
+        try:
+            while 1:
+                with colorama_text():
+                    command = input(Style.DIM + "Introduce new command \n>>" + Style.RESET_ALL + Fore.CYAN)
+                self.logger.info("Command introduced: {}".format(command))
+                
+                print(Style.RESET_ALL, end = "")
+                sys.stdout.flush()
 
-            if command == "status":
-                self.print_status()
+                if command == "status":
+                    self.print_status()
 
-            elif command == "change power":
-                self.command_change_power()
-                
-            elif command == "debug power":
-                self.command_debug_power()
+                elif command == "change power":
+                    self.command_change_power()
+                    
+                elif command == "debug power":
+                    self.command_debug_power()
 
-            elif command == "manual ramp":
-                self.command_manual_ramp()
-                
-            elif command == "temp control":
-                self.command_temp_control()
+                elif command == "manual ramp":
+                    self.command_manual_ramp()
+                    
+                elif command == "temp control":
+                    self.command_temp_control()
 
-            elif command == "dynamic setpoint":
-                self.command_dynamic_setpoint()
+                elif command == "dynamic setpoint":
+                    self.command_dynamic_setpoint()
 
-            elif command == "cooling":
-                self.command_cooling()
+                elif command == "cooling":
+                    self.command_cooling()
 
-            elif command == "start pid":
-                self.command_start_pid()
+                elif command == "start pid":
+                    self.command_start_pid()
 
-            elif command == "stop pid":
-                self.command_stop_pid()
-                
-            elif command == "debug pid":
-                self.command_debug_pid()
+                elif command == "stop pid":
+                    self.command_stop_pid()
+                    
+                elif command == "debug pid":
+                    self.command_debug_pid()
 
-            elif command == "modify pid":
-                self.command_modify_pid()
-                
-            elif command == "mv move":
-                self.command_mv_move()
-                
-            elif command == "mvr move":
-                self.command_mvr_move()
+                elif command == "modify pid":
+                    self.command_modify_pid()
+                    
+                elif command == "mv move":
+                    self.command_mv_move()
+                    
+                elif command == "mvr move":
+                    self.command_mvr_move()
 
-            elif command == "jump":
-                self.command_do_jump()
-                
-            elif command == "single jump":
-                self.pressure_jump()
-                
-            elif command.split(' ')[0] in ["open", "close"] and \
-                 command.split(' ')[1] in ["rotary", "turbo"] and \
-                 len(command.split(' ')) == 2:
-                self.change_valve_state(*command.split(' '))
-                
-            elif command == "keithley status":
-                self.print_keithley_status()
-                
-            elif command == "start resistance":
-                self.command_start_resistance()
-                
-            elif command == "stop resistance":
-                self.command_stop_resistance()
-                
-            elif command == "prepare resistance":
-                self.command_prepare_resistance()
-                
-            elif command == "start reading":
-                self.command_start_reading()
+                elif command == "jump":
+                    self.command_do_jump()
+                    
+                elif command == "single jump":
+                    self.pressure_jump()
+                    
+                elif command.split(' ')[0] in ["open", "close"] and \
+                    command.split(' ')[1] in ["rotary", "turbo"] and \
+                    len(command.split(' ')) == 2:
+                    self.change_valve_state(*command.split(' '))
+                    
+                elif command == "keithley status":
+                    self.print_keithley_status()
+                    
+                elif command == "start resistance":
+                    self.command_start_resistance()
+                    
+                elif command == "stop resistance":
+                    self.command_stop_resistance()
+                    
+                elif command == "prepare resistance":
+                    self.command_prepare_resistance()
+                    
+                elif command == "start reading":
+                    self.command_start_reading()
 
-            elif command == "stop reading":
-                self.command_stop_reading()
+                elif command == "stop reading":
+                    self.command_stop_reading()
 
-            elif command == "exit":
-                self.command_stop_reading()
-                self.stop_reading.set()
-                break
-            
-            elif command == "":
-                pass
-            
-            else:
-                print(Fore.YELLOW + "WARNING: Command not found!")
+                elif command == "load jump calibration":
+                    self.command_load_jump_calibration()
+
+                elif command == "get jump calibration":
+                    self.command_get_jump_calbration()
+
+                elif command == "exit":
+                    self.command_stop_reading()
+                    self.stop_reading.set()
+                    break
                 
-            print(Style.RESET_ALL, end="")
+                elif command == "":
+                    pass
+                
+                else:
+                    print(Fore.YELLOW + "WARNING: Command not found!")
+                    
+                print(Style.RESET_ALL, end="")
+        except KeyboardInterrupt:
+            print("\nAborting and cooling DHS1100.....")
+            self.dhs1100.write_setpoint(25)
+            self.dhs1100.write_temp_control(0)
+            self.dhs1100.write_target_power(0)
+            print("DHS1100 turned off. Good bye")
+
 
 if __name__ == "__main__":
     a = CLI_experiment_manager()
