@@ -14,14 +14,16 @@ import math
 import logging
 import pandas as pd
 import pprint
+from prompt_toolkit import PromptSession
+from prompt_toolkit.styles import Style
 
-from furnace_controller_tango import DHS1100_controller
-from logger_instruments_tango import Instruments_logger
+from tlag_experiment.tango.furnace_controller_tango import DHS1100_controller
+from tlag_experiment.tango.logger_instruments_tango import Instruments_logger
 
 import sys
-import colorama
-from colorama import colorama_text, Fore, Style
-
+from colorama import (Fore,
+                      Style as Style_colorama
+                     )
 import tango
 
 # sys.path.insert(1, 'C:\\Users\\User\\Documents\\TLAG-tool_SAFA')
@@ -847,14 +849,26 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         
         print("WARNING: This script needs to be updated with the new content of the scrip that does not use tango: /tlag_manager/scripts/cli_experiment.py")
 
+        session = PromptSession()
+        
+        my_style = Style.from_dict({
+            # User input (default text).
+            '':          '#4eaf23',
 
+            # Prompt.
+            'message': '#505050',
+        })
+
+        message = [
+            ('class:message', 'Introduce new command \n>>')
+        ]
+
+        
         try:
             while 1:
-                with colorama_text():
-                    command = input(Style.DIM + "Introduce new command \n>>" + Style.RESET_ALL + Fore.CYAN)
+                command = session.prompt(message, style=my_style)
                 self.logger.info("Command introduced: {}".format(command))
                 
-                print(Style.RESET_ALL, end = "")
                 sys.stdout.flush()
 
                 if command == "status":
@@ -942,14 +956,17 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
                 else:
                     print(Fore.YELLOW + "WARNING: Command not found!")
                     
-                print(Style.RESET_ALL, end="")
+                print(Style_colorama.RESET_ALL, end="")
         except KeyboardInterrupt:
             print("\nAborting and cooling DHS1100.....")
-            self.dhs1100.write_setpoint(25)
-            self.dhs1100.write_temp_control(0)
-            self.dhs1100.write_target_power(0)
+            self.dhs1100.write_attribute("setpoint", 25)
+            self.dhs1100.write_attribute("temp_control", 0)
+            self.dhs1100.write_attribute("target_power", 0)
             print("DHS1100 turned off. Good bye")
 
 
-if __name__ == "__main__":
+def main():
     a = CLI_experiment_manager()
+
+if __name__ == "__main__":
+    main()

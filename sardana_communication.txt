@@ -1877,3 +1877,6 @@ stop_acquisition
 start_acquisition
 stop_acquisition
 start_acquisition
+stop_acquisition
+stop_acquisition
+stop_acquisition
