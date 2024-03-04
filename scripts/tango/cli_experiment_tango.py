@@ -67,7 +67,7 @@ class CLI_experiment_manager(DHS1100_controller, Instruments_logger):
         # self.graphix242_writer_process.start()
 
     def update_status_relay(self):
-        self.relay_status = self.eth002Relay.get_states()
+        self.relay_status = self.eth002Relay.command_inout("get_states")
 
         for i, status in enumerate(self.relay_status):
             state = "open" if status else "closed"
